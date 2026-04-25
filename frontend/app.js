@@ -1,7 +1,7 @@
 // FinGuard — shared client config & helpers
 window.FINGUARD = {
   // FastAPI backend (uvicorn main:app --port 8000)
-  API: localStorage.getItem("FINGUARD_API") || "http://localhost:8000",
+  API: localStorage.getItem("FINGUARD_API") || "https://web-production-7bcd2.up.railway.app",
 
   // Public Supabase config — anon key, safe in the browser
   SUPABASE_URL: "https://leiiakaqucvdvwtxsqrg.supabase.co",
