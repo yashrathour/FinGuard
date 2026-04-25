@@ -1,0 +1,22 @@
+# Environment
+.env
+_env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Data — PaySim1 CSV is too large for git
+data/
+
+# OS
+.DS_Store
+Thumbs.db

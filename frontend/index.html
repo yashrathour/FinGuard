@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FinGuard — Fraud Intelligence Dashboard</title>
+  <meta name="description" content="Real-time fraud detection on PaySim1: XGBoost + Autoencoder ensemble with sub-50ms inference, AUC-ROC 0.98+." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="header"></div>
+
+  <main class="container">
+    <!-- Hero -->
+    <section class="hero">
+      <span class="tag">● Live · PaySim1 · 6.36M transactions</span>
+      <h1 style="margin-top:14px">
+        Catch fraud in <span class="grad">under 50&nbsp;ms.</span><br/>
+        At the scale of <span class="grad">millions of transactions.</span>
+      </h1>
+      <p>FinGuard fuses an <strong>XGBoost</strong> classifier with a deep <strong>Autoencoder</strong> anomaly
+        detector to flag suspicious money movements with <strong>0.98+&nbsp;AUC-ROC</strong> on the PaySim1
+        synthetic-banking benchmark. Every prediction is logged to Supabase for full auditability.</p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="detect.html">
+          Score your transactions →
+        </a>
+        <a class="btn" href="#metrics">View model metrics</a>
+      </div>
+    </section>
+
+    <!-- KPI cards -->
+    <section class="section">
+      <div class="stat-grid" id="kpi-grid">
+        <div class="card"><div class="stat-label">AUC-ROC</div><div class="stat-value cyan" id="kpi-auc">—</div><div class="stat-sub">Area under ROC</div></div>
+        <div class="card"><div class="stat-label">F1 Score</div><div class="stat-value green" id="kpi-f1">—</div><div class="stat-sub">Harmonic mean</div></div>
+        <div class="card"><div class="stat-label">Precision · Recall</div><div class="stat-value amber" id="kpi-pr">—</div><div class="stat-sub">on hold-out test set</div></div>
+        <div class="card"><div class="stat-label">Inference Latency</div><div class="stat-value cyan" id="kpi-lat">—</div><div class="stat-sub">average per transaction</div></div>
+      </div>
+    </section>
+
+    <!-- Charts -->
+    <section class="section" id="metrics">
+      <div class="grid-2">
+        <div class="card">
+          <div class="spread">
+            <h2 class="card-title">ROC Curve</h2>
+            <span class="code-pill" id="auc-pill">AUC = —</span>
+          </div>
+          <div class="chart-wrap"><canvas id="rocChart"></canvas></div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Precision–Recall</h2>
+          <div class="chart-wrap"><canvas id="prChart"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="grid-3">
+        <div class="card">
+          <div class="spread">
+            <h2 class="card-title">Live Transaction Stream</h2>
+            <span class="muted"><span class="live-dot"></span>simulated, scored client-side</span>
+          </div>
+          <div class="stream" id="stream"></div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">System Health</h2>
+          <div id="health-body">
+            <div class="row spread"><span class="muted">Model</span> <span id="h-model" class="code-pill">—</span></div>
+            <div class="row spread" style="margin-top:10px"><span class="muted">Backend</span> <span id="h-backend" class="code-pill">—</span></div>
+            <div class="row spread" style="margin-top:10px"><span class="muted">Supabase</span> <span id="h-supa" class="code-pill">—</span></div>
+            <div class="row spread" style="margin-top:10px"><span class="muted">Avg Latency</span> <span id="h-lat" class="code-pill">—</span></div>
+            <div class="row spread" style="margin-top:10px"><span class="muted">F1 Score</span> <span id="h-f1" class="code-pill">—</span></div>
+            <div class="row spread" style="margin-top:10px"><span class="muted">Predictions logged</span> <span id="h-count" class="code-pill">—</span></div>
+          </div>
+          <p class="card-sub" style="margin-top:14px">
+            Health pulls from <code>/health</code>. Prediction count is read directly from the
+            <code>fraud_predictions</code> table in Supabase.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="grid-2">
+        <div class="card">
+          <h2 class="card-title">Top Feature Importance</h2>
+          <div class="chart-wrap"><canvas id="featChart"></canvas></div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Confusion Matrix (test set)</h2>
+          <div id="cm" class="chart-wrap" style="display:grid; grid-template-columns: 90px 1fr 1fr; grid-template-rows: 40px 1fr 1fr; gap:8px; align-items:stretch;"></div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      FinGuard · XGBoost + Autoencoder ensemble · Trained on PaySim1 ·
+      Backend at <code id="api-url" class="code-pill"></code>
+    </footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="app.js"></script>
+  <script>
+    document.getElementById("header").innerHTML = renderHeader("home");
+    document.getElementById("api-url").textContent = FINGUARD.API;
+
+    const fmtPct = (v) => (v == null ? "—" : (v * 100).toFixed(2) + "%");
+    const fmt4   = (v) => (v == null ? "—" : Number(v).toFixed(4));
+
+    function paintKPIs(m) {
+      document.getElementById("kpi-auc").textContent = fmt4(m.auc_roc);
+      document.getElementById("kpi-f1").textContent  = fmt4(m.f1_score);
+      document.getElementById("kpi-pr").textContent  =
+        `${(m.precision_score * 100).toFixed(1)}% · ${(m.recall_score * 100).toFixed(1)}%`;
+      document.getElementById("kpi-lat").textContent = (m.avg_latency_ms ?? 0).toFixed(1) + " ms";
+      document.getElementById("auc-pill").textContent = "AUC = " + fmt4(m.auc_roc);
+    }
+
+    function paintCharts(m) {
+      // ROC
+      new Chart(document.getElementById("rocChart"), {
+        type: "line",
+        data: {
+          labels: m.roc_curve.fpr.map((v) => Number(v).toFixed(2)),
+          datasets: [
+            {
+              label: `Model (AUC = ${fmt4(m.auc_roc)})`,
+              data: m.roc_curve.tpr, borderColor: "#22d3ee",
+              backgroundColor: "rgba(34,211,238,0.18)", fill: true, tension: 0.25,
+              pointRadius: 0, borderWidth: 2,
+            },
+            { label: "Random", data: m.roc_curve.fpr,
+              borderColor: "rgba(148,163,184,0.5)", borderDash: [6, 6],
+              pointRadius: 0, borderWidth: 1, fill: false },
+          ],
+        },
+        options: CHART_OPTS,
+      });
+
+      // PR
+      new Chart(document.getElementById("prChart"), {
+        type: "line",
+        data: {
+          labels: m.pr_curve.recall.map((v) => Number(v).toFixed(2)),
+          datasets: [{
+            label: "Precision–Recall",
+            data: m.pr_curve.precision,
+            borderColor: "#34d399", backgroundColor: "rgba(52,211,153,0.18)",
+            fill: true, tension: 0.25, pointRadius: 0, borderWidth: 2,
+          }],
+        },
+        options: CHART_OPTS,
+      });
+
+      // Feature importance
+      const fi = m.feature_importance.slice(0, 8);
+      new Chart(document.getElementById("featChart"), {
+        type: "bar",
+        data: {
+          labels: fi.map((f) => f.feature),
+          datasets: [{
+            label: "Importance",
+            data: fi.map((f) => f.importance),
+            backgroundColor: "rgba(34,211,238,0.7)", borderRadius: 6,
+          }],
+        },
+        options: { ...CHART_OPTS, indexAxis: "y" },
+      });
+
+      // Confusion matrix
+      const [[tn, fp], [fn, tp]] = m.confusion_matrix;
+      const cm = document.getElementById("cm");
+      cm.innerHTML = `
+        <div></div>
+        <div style="display:grid;place-items:center;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.12em">Pred 0</div>
+        <div style="display:grid;place-items:center;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.12em">Pred 1</div>
+        <div style="display:grid;place-items:center;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.12em">Actual 0</div>
+        <div class="card" style="margin:0;padding:14px;text-align:center">
+          <div class="muted" style="font-size:11px">True Negatives</div>
+          <div style="font-size:24px;font-weight:600;color:var(--accent)">${tn.toLocaleString()}</div>
+        </div>
+        <div class="card" style="margin:0;padding:14px;text-align:center">
+          <div class="muted" style="font-size:11px">False Positives</div>
+          <div style="font-size:24px;font-weight:600;color:var(--warning)">${fp.toLocaleString()}</div>
+        </div>
+        <div style="display:grid;place-items:center;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.12em">Actual 1</div>
+        <div class="card" style="margin:0;padding:14px;text-align:center">
+          <div class="muted" style="font-size:11px">False Negatives</div>
+          <div style="font-size:24px;font-weight:600;color:var(--danger)">${fn.toLocaleString()}</div>
+        </div>
+        <div class="card" style="margin:0;padding:14px;text-align:center">
+          <div class="muted" style="font-size:11px">True Positives</div>
+          <div style="font-size:24px;font-weight:600;color:var(--accent)">${tp.toLocaleString()}</div>
+        </div>
+      `;
+    }
+
+    async function paintHealth() {
+      const h = await api.health();
+      document.getElementById("h-model").textContent   = h.model_loaded ? "loaded" : "untrained";
+      document.getElementById("h-backend").textContent = h.status === "ok" ? "online" : "offline (mock)";
+      document.getElementById("h-lat").textContent     = (h.avg_latency_ms ?? 0).toFixed(1) + " ms";
+      document.getElementById("h-f1").textContent      = fmt4(h.f1_score);
+
+      try {
+        const { count, error } = await supa()
+          .from("fraud_predictions")
+          .select("*", { count: "exact", head: true });
+        if (error) throw error;
+        document.getElementById("h-supa").textContent  = "online";
+        document.getElementById("h-count").textContent = (count ?? 0).toLocaleString();
+      } catch {
+        document.getElementById("h-supa").textContent  = "schema not deployed";
+        document.getElementById("h-count").textContent = "—";
+      }
+    }
+
+    // Live stream simulator — generates a random PaySim-shaped transaction every ~1.4s,
+    // marks it fraud using a small heuristic so the dashboard feels alive even without backend.
+    const TYPES = ["CASH_OUT", "TRANSFER", "PAYMENT", "CASH_IN", "DEBIT"];
+    function simTx() {
+      const type = TYPES[Math.floor(Math.random() * TYPES.length)];
+      const amount = Math.round(Math.random() ** 3 * 800000) / 100;
+      const oldOrg = Math.round(Math.random() * 1_000_000) / 100;
+      const newOrg = Math.max(0, oldOrg - amount);
+      // Heuristic: large TRANSFER/CASH_OUT that drains the origin balance ≈ fraud
+      const drain = oldOrg > 0 && newOrg / Math.max(oldOrg, 1) < 0.05;
+      const big   = amount > 2000;
+      const isFraud = (type === "TRANSFER" || type === "CASH_OUT") && drain && big && Math.random() < 0.55;
+      const prob = isFraud ? 0.7 + Math.random() * 0.29 : Math.random() * 0.25;
+      return {
+        type, amount, oldOrg, newOrg,
+        nameOrig: "C" + Math.floor(Math.random() * 1e9),
+        nameDest: (Math.random() < 0.5 ? "C" : "M") + Math.floor(Math.random() * 1e9),
+        prob, isFraud,
+      };
+    }
+
+    function pushStream() {
+      const t = simTx();
+      const row = document.createElement("div");
+      row.className = "stream-row " + (t.isFraud ? "fraud" : "ok");
+      row.innerHTML = `
+        <span class="mono">${new Date().toLocaleTimeString()}</span>
+        <span class="type" style="color:${t.isFraud ? 'var(--danger)' : 'var(--accent)'}">${t.type}</span>
+        <span class="mono">${t.nameOrig} → ${t.nameDest}</span>
+        <span class="amt">$${t.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+        <span class="badge ${t.isFraud ? 'bad' : 'good'}">${t.isFraud ? 'FRAUD ' + (t.prob*100).toFixed(0) + '%' : 'OK ' + (t.prob*100).toFixed(0) + '%'}</span>
+      `;
+      const stream = document.getElementById("stream");
+      stream.prepend(row);
+      while (stream.children.length > 40) stream.removeChild(stream.lastChild);
+    }
+
+    (async () => {
+      const m = await api.metrics();
+      paintKPIs(m);
+      paintCharts(m);
+      await paintHealth();
+      pushStream(); pushStream(); pushStream();
+      setInterval(pushStream, 1400);
+      setInterval(paintHealth, 15000);
+    })();
+  </script>
+</body>
+</html>

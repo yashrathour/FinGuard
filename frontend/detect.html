@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FinGuard — Detect Fraud in Your Transactions</title>
+  <meta name="description" content="Upload a CSV of transactions and FinGuard tells you which ones are fraud. Powered by an XGBoost + Autoencoder ensemble trained on PaySim1." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="header"></div>
+
+  <main class="container">
+    <section class="hero" style="padding: 40px 0 16px">
+      <span class="tag">● Detect</span>
+      <h1 style="margin-top:14px; font-size: clamp(28px, 4vw, 44px)">
+        Upload your transactions, get back the <span class="grad">fraudulent ones.</span>
+      </h1>
+      <p>Drop a CSV in PaySim1 format. We score every row through the trained ensemble, log inputs and
+        outputs to Supabase, and highlight the suspicious transactions in the table below.</p>
+    </section>
+
+    <section class="section">
+      <div class="card">
+        <div class="spread">
+          <h2 class="card-title">1. Provide transactions</h2>
+          <div class="row">
+            <button class="btn" id="btn-sample">Load sample data</button>
+            <a class="btn" href="sample_transactions.csv" download>Download CSV template</a>
+          </div>
+        </div>
+
+        <div id="dropzone" class="dropzone" style="margin-top:14px">
+          <input type="file" id="file" accept=".csv" hidden />
+          <div style="font-size:18px"><strong>Click to upload</strong> or drag a CSV here</div>
+          <div class="muted" style="margin-top:6px">
+            Required columns: <code>step,type,amount,nameOrig,oldbalanceOrg,newbalanceOrig,nameDest,oldbalanceDest,newbalanceDest</code>
+          </div>
+        </div>
+
+        <div id="parse-status" class="muted" style="margin-top:12px"></div>
+      </div>
+    </section>
+
+    <section class="section" id="results-section" style="display:none">
+      <div class="stat-grid" style="margin-bottom:16px">
+        <div class="card"><div class="stat-label">Transactions scored</div><div class="stat-value cyan" id="r-count">—</div></div>
+        <div class="card"><div class="stat-label">Flagged as fraud</div><div class="stat-value red"  id="r-fraud">—</div></div>
+        <div class="card"><div class="stat-label">Fraud rate</div>      <div class="stat-value amber" id="r-rate">—</div></div>
+        <div class="card"><div class="stat-label">Avg latency</div>     <div class="stat-value green" id="r-lat">—</div></div>
+      </div>
+
+      <div class="card">
+        <div class="spread">
+          <h2 class="card-title">2. Results</h2>
+          <div class="row">
+            <label class="muted" style="font-size:13px">
+              <input type="checkbox" id="only-fraud" /> Show only fraud
+            </label>
+            <button class="btn btn-primary" id="btn-export">Export flagged CSV</button>
+          </div>
+        </div>
+        <div class="table-wrap" style="margin-top:12px">
+          <table id="results-table">
+            <thead>
+              <tr>
+                <th>#</th><th>Type</th><th>Amount</th>
+                <th>Origin</th><th>Destination</th>
+                <th>Fraud Prob.</th><th>Anomaly</th><th>Verdict</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="card-sub" style="margin-top:10px" id="storage-status"></p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="card">
+        <h2 class="card-title">How scoring works</h2>
+        <p class="muted" style="margin:0 0 8px">
+          Each row is sent to the FastAPI backend (<code id="api-url" class="code-pill"></code>) at
+          <code class="code-pill">/score/batch</code>. The backend scales features, applies PCA, asks
+          XGBoost for a fraud probability and the Autoencoder for a reconstruction-error anomaly score,
+          then blends the two (0.7 / 0.3). Inputs land in <code>transactions</code> and outputs in
+          <code>fraud_predictions</code> — both in your Supabase project.
+        </p>
+        <p class="muted" style="margin:8px 0 0">
+          If the backend is offline we still run a fast heuristic scorer in the browser so the demo works
+          end-to-end. Start the backend with <code class="code-pill">uvicorn main:app --port 8000</code>
+          to use the real ensemble.
+        </p>
+      </div>
+    </section>
+
+    <footer class="footer">FinGuard · Upload → Score → Audit</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="app.js"></script>
+  <script>
+    document.getElementById("header").innerHTML = renderHeader("detect");
+    document.getElementById("api-url").textContent = FINGUARD.API;
+
+    const REQUIRED = ["step","type","amount","nameOrig","oldbalanceOrg","newbalanceOrig","nameDest","oldbalanceDest","newbalanceDest"];
+    let lastResults = []; // [{tx, fraud_probability, anomaly_score, is_fraud}]
+    let lastBatchId = null;
+
+    const dz = document.getElementById("dropzone");
+    const fileInput = document.getElementById("file");
+    const parseStatus = document.getElementById("parse-status");
+
+    dz.addEventListener("click", () => fileInput.click());
+    dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("drag"); });
+    dz.addEventListener("dragleave", () => dz.classList.remove("drag"));
+    dz.addEventListener("drop", (e) => {
+      e.preventDefault(); dz.classList.remove("drag");
+      if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener("change", () => fileInput.files[0] && handleFile(fileInput.files[0]));
+
+    document.getElementById("btn-sample").addEventListener("click", () => {
+      parseStatus.innerHTML = "Generating 50 sample transactions…";
+      const rows = generateSample(50);
+      runScoring(rows);
+    });
+
+    document.getElementById("only-fraud").addEventListener("change", renderTable);
+    document.getElementById("btn-export").addEventListener("click", exportCsv);
+
+    function handleFile(file) {
+      parseStatus.innerHTML = `Parsing <code>${file.name}</code>…`;
+      Papa.parse(file, {
+        header: true, dynamicTyping: true, skipEmptyLines: true,
+        complete: (res) => {
+          const missing = REQUIRED.filter((c) => !res.meta.fields.includes(c));
+          if (missing.length) {
+            parseStatus.innerHTML = `<span class="error">Missing columns: ${missing.join(", ")}</span>`;
+            return;
+          }
+          const rows = res.data
+            .map((r) => ({
+              step: Number(r.step) || 0,
+              type: String(r.type || "").trim().toUpperCase(),
+              amount: Number(r.amount) || 0,
+              nameOrig: String(r.nameOrig || ""),
+              oldbalanceOrg: Number(r.oldbalanceOrg) || 0,
+              newbalanceOrig: Number(r.newbalanceOrig) || 0,
+              nameDest: String(r.nameDest || ""),
+              oldbalanceDest: Number(r.oldbalanceDest) || 0,
+              newbalanceDest: Number(r.newbalanceDest) || 0,
+            }))
+            .filter((r) => r.type && r.nameOrig);
+          if (!rows.length) {
+            parseStatus.innerHTML = `<span class="error">No usable rows in CSV.</span>`;
+            return;
+          }
+          parseStatus.innerHTML = `Parsed <strong>${rows.length.toLocaleString()}</strong> rows. Scoring…`;
+          runScoring(rows);
+        },
+        error: (err) => { parseStatus.innerHTML = `<span class="error">Parse error: ${err.message}</span>`; },
+      });
+    }
+
+    async function runScoring(rows) {
+      const t0 = performance.now();
+      let results, source = "backend";
+      try {
+        const resp = await api.scoreBatch(rows);
+        lastBatchId = resp.batch_id;
+        results = resp.results.map((r, i) => ({ tx: rows[i], ...r }));
+      } catch (err) {
+        source = "client-heuristic";
+        results = rows.map((tx) => {
+          const drain = tx.oldbalanceOrg > 0 && (tx.newbalanceOrig / tx.oldbalanceOrg) < 0.05;
+          const big   = tx.amount > 2000;
+          const risky = (tx.type === "TRANSFER" || tx.type === "CASH_OUT") && drain && big;
+          const prob  = risky ? 0.72 + Math.random() * 0.27 : Math.random() * 0.25;
+          return { tx, fraud_probability: prob, anomaly_score: prob * 0.6,
+                   is_fraud: prob >= 0.5, latency_ms: 0.3 };
+        });
+        // Best-effort: still log to Supabase from the browser if schema is deployed
+        await logToSupabase(rows, results).catch(() => {});
+      }
+      lastResults = results;
+      const elapsed = performance.now() - t0;
+
+      const fraud = results.filter((r) => r.is_fraud).length;
+      document.getElementById("r-count").textContent = results.length.toLocaleString();
+      document.getElementById("r-fraud").textContent = fraud.toLocaleString();
+      document.getElementById("r-rate").textContent  = ((fraud / results.length) * 100).toFixed(2) + "%";
+      const avgLat = results.reduce((s, r) => s + (r.latency_ms || 0), 0) / results.length;
+      document.getElementById("r-lat").textContent   = (avgLat || elapsed / results.length).toFixed(2) + " ms";
+
+      document.getElementById("storage-status").innerHTML = source === "backend"
+        ? `<span class="ok">✓ Scored by FastAPI backend · stored in Supabase batch <code class="code-pill">${lastBatchId?.slice(0, 8) || ''}</code></span>`
+        : `<span class="error">⚠ Backend offline — used in-browser heuristic. Stored to Supabase if schema is deployed.</span>`;
+      parseStatus.textContent = "";
+      document.getElementById("results-section").style.display = "";
+      renderTable();
+    }
+
+    async function logToSupabase(rows, results) {
+      const batch_id = crypto.randomUUID();
+      lastBatchId = batch_id;
+      const txPayload = rows.map((r) => ({
+        batch_id, step: r.step, type: r.type, amount: r.amount,
+        name_orig: r.nameOrig, oldbalance_org: r.oldbalanceOrg, newbalance_orig: r.newbalanceOrig,
+        name_dest: r.nameDest, oldbalance_dest: r.oldbalanceDest, newbalance_dest: r.newbalanceDest,
+      }));
+      const { data: inserted, error } = await supa().from("transactions").insert(txPayload).select("id");
+      if (error) throw error;
+      const predPayload = inserted.map((row, i) => ({
+        transaction_id: row.id, batch_id,
+        fraud_probability: results[i].fraud_probability,
+        anomaly_score: results[i].anomaly_score,
+        is_fraud: results[i].is_fraud,
+        model_version: "v1.0-client-heuristic",
+        latency_ms: results[i].latency_ms || 0,
+      }));
+      await supa().from("fraud_predictions").insert(predPayload);
+    }
+
+    function renderTable() {
+      const tbody = document.querySelector("#results-table tbody");
+      const onlyFraud = document.getElementById("only-fraud").checked;
+      const items = onlyFraud ? lastResults.filter((r) => r.is_fraud) : lastResults;
+      tbody.innerHTML = items.slice(0, 1000).map((r, i) => `
+        <tr class="${r.is_fraud ? 'fraud' : ''}">
+          <td class="muted">${i + 1}</td>
+          <td><strong>${r.tx.type}</strong></td>
+          <td>$${Number(r.tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+          <td><span class="code-pill">${r.tx.nameOrig}</span></td>
+          <td><span class="code-pill">${r.tx.nameDest}</span></td>
+          <td>${(r.fraud_probability * 100).toFixed(1)}%</td>
+          <td>${(r.anomaly_score * 100).toFixed(1)}%</td>
+          <td><span class="badge ${r.is_fraud ? 'bad' : 'good'}">${r.is_fraud ? 'FRAUD' : 'OK'}</span></td>
+        </tr>
+      `).join("");
+      if (items.length > 1000) {
+        tbody.innerHTML += `<tr><td colspan="8" class="muted" style="text-align:center;padding:14px">
+          Showing first 1,000 of ${items.length.toLocaleString()} rows.</td></tr>`;
+      }
+    }
+
+    function exportCsv() {
+      const fraudOnly = lastResults.filter((r) => r.is_fraud);
+      const header = ["step","type","amount","nameOrig","oldbalanceOrg","newbalanceOrig","nameDest","oldbalanceDest","newbalanceDest","fraud_probability","anomaly_score"];
+      const csv = [header.join(",")].concat(
+        fraudOnly.map((r) => [
+          r.tx.step, r.tx.type, r.tx.amount, r.tx.nameOrig, r.tx.oldbalanceOrg, r.tx.newbalanceOrig,
+          r.tx.nameDest, r.tx.oldbalanceDest, r.tx.newbalanceDest,
+          r.fraud_probability.toFixed(4), r.anomaly_score.toFixed(4),
+        ].join(","))
+      ).join("\n");
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "finguard_flagged.csv"; a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function generateSample(n) {
+      const TYPES = ["CASH_OUT", "TRANSFER", "PAYMENT", "CASH_IN", "DEBIT"];
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const type = TYPES[Math.floor(Math.random() * TYPES.length)];
+        const oldOrg = Math.round(Math.random() * 800000 * 100) / 100;
+        const fraud = Math.random() < 0.18;
+        const amount = fraud
+          ? Math.max(2500, oldOrg * (0.95 + Math.random() * 0.05))
+          : Math.round(Math.random() ** 2 * 50000 * 100) / 100;
+        const newOrg = Math.max(0, +(oldOrg - amount).toFixed(2));
+        const oldDest = Math.round(Math.random() * 200000 * 100) / 100;
+        out.push({
+          step: 1 + Math.floor(Math.random() * 720),
+          type, amount: +amount.toFixed(2),
+          nameOrig: "C" + Math.floor(Math.random() * 1e9),
+          oldbalanceOrg: oldOrg, newbalanceOrig: newOrg,
+          nameDest: (Math.random() < 0.5 ? "C" : "M") + Math.floor(Math.random() * 1e9),
+          oldbalanceDest: oldDest,
+          newbalanceDest: +(oldDest + amount).toFixed(2),
+        });
+      }
+      return out;
+    }
+  </script>
+</body>
+</html>
