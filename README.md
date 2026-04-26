@@ -13,7 +13,7 @@ Real-time financial fraud detection powered by an **XGBoost + Autoencoder ensemb
 
 | Service | URL |
 |--------|-----|
-| Frontend | Deployed on Vercel |
+| Frontend | finguard-1.vercel.app |
 | Backend API | Deployed on Railway |
 
 ---
@@ -211,7 +211,7 @@ Full schema in `schema.sql`.
 
 ## Team
 
-Built by Yash Maheshwari, Yash Kumar, and Yash Rathour under the supervision of Dr. Anju Susan George at Manipal University Jaipur.
+Built by Yash Rathour
 
 ---
 
